@@ -1,19 +1,20 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import mqtt from "mqtt"; // npm install mqtt
 
 // ── MQTT config ───────────────────────────────────────────────────────────────
-const MQTT_HOST    = "10.156.116.175";
-const MQTT_WS_PORT = 1886;
+const MQTT_HOST    = "10.156.116.176";
+const MQTT_WS_PORT = 1883;
 const MQTT_TOPIC   = "Unilever_Ph_Nutrition/Dressings_Halal/Filling_Flexibles/DFOS/Dressings DFOS Params";
 
 // ── Filler state map ──────────────────────────────────────────────────────────
 const FILLER_STATE = {
-  0: { label: "Idle",       color: "text-slate-400",   bg: "bg-slate-50",   ring: "ring-slate-200"   },
-  1: { label: "Starting",   color: "text-amber-500",   bg: "bg-amber-50",   ring: "ring-amber-200"   },
-  2: { label: "Running",    color: "text-emerald-500", bg: "bg-emerald-50", ring: "ring-emerald-200" },
-  3: { label: "Stopping",   color: "text-amber-500",   bg: "bg-amber-50",   ring: "ring-amber-200"   },
-  4: { label: "Stopped",    color: "text-red-500",     bg: "bg-red-50",     ring: "ring-red-200"     },
-  5: { label: "Fault",      color: "text-red-600",     bg: "bg-red-50",     ring: "ring-red-200"     },
-  6: { label: "Running",    color: "text-emerald-500", bg: "bg-emerald-50", ring: "ring-emerald-200" },
+  0: { label: "Idle",     color: "text-slate-400",   bg: "bg-slate-50",   ring: "ring-slate-200"   },
+  1: { label: "Starting", color: "text-amber-500",   bg: "bg-amber-50",   ring: "ring-amber-200"   },
+  2: { label: "Running",  color: "text-emerald-500", bg: "bg-emerald-50", ring: "ring-emerald-200" },
+  3: { label: "Stopping", color: "text-amber-500",   bg: "bg-amber-50",   ring: "ring-amber-200"   },
+  4: { label: "Stopped",  color: "text-red-500",     bg: "bg-red-50",     ring: "ring-red-200"     },
+  5: { label: "Fault",    color: "text-red-600",     bg: "bg-red-50",     ring: "ring-red-200"     },
+  6: { label: "Running",  color: "text-emerald-500", bg: "bg-emerald-50", ring: "ring-emerald-200" },
 };
 
 // ── Static graph data ─────────────────────────────────────────────────────────
@@ -52,9 +53,9 @@ const LEGEND = [
 ];
 const NAV_ITEMS = [
   { label:"Dashboard",                 icon:"⊞" },
-  { label:"DFOS Data",                 icon:"🗂" },
-  { label:"Fill Weight Dressing Data", icon:"⚖" },
-  { label:"Weight Data",               icon:"📊" },
+//   { label:"DFOS Data",                 icon:"🗂" },
+//   { label:"Fill Weight Dressing Data", icon:"⚖" },
+//   { label:"Weight Data",               icon:"📊" },
 ];
 const EFFICIENCY_META = [
   { key:"oee",         label:"OEE",          tw:"bg-indigo-500"  },
@@ -64,12 +65,12 @@ const EFFICIENCY_META = [
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function Badge({ children, color="emerald" }) {
+function Badge({ children, color = "emerald" }) {
   const m = {
-    emerald:"bg-emerald-50 text-emerald-600 ring-emerald-200",
-    red:"bg-red-50 text-red-500 ring-red-200",
-    amber:"bg-amber-50 text-amber-600 ring-amber-200",
-    slate:"bg-slate-100 text-slate-500 ring-slate-200",
+    emerald: "bg-emerald-50 text-emerald-600 ring-emerald-200",
+    red:     "bg-red-50 text-red-500 ring-red-200",
+    amber:   "bg-amber-50 text-amber-600 ring-amber-200",
+    slate:   "bg-slate-100 text-slate-500 ring-slate-200",
   };
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ring-1 ${m[color]}`}>
@@ -80,10 +81,10 @@ function Badge({ children, color="emerald" }) {
 
 function MqttStatusPill({ status }) {
   const map = {
-    connecting: { dot:"bg-amber-400 animate-pulse", text:"Connecting…",  pill:"bg-amber-50 border-amber-200 text-amber-600" },
-    connected:  { dot:"bg-emerald-500 animate-pulse", text:"MQTT Live",  pill:"bg-emerald-50 border-emerald-200 text-emerald-600" },
-    error:      { dot:"bg-red-500",                   text:"MQTT Error", pill:"bg-red-50 border-red-200 text-red-600" },
-    disconnected:{ dot:"bg-slate-400",                text:"Disconnected",pill:"bg-slate-100 border-slate-200 text-slate-500" },
+    connecting:   { dot: "bg-amber-400 animate-pulse",   text: "Connecting…",   pill: "bg-amber-50 border-amber-200 text-amber-600"     },
+    connected:    { dot: "bg-emerald-500 animate-pulse",  text: "MQTT Live",     pill: "bg-emerald-50 border-emerald-200 text-emerald-600" },
+    error:        { dot: "bg-red-500",                    text: "MQTT Error",    pill: "bg-red-50 border-red-200 text-red-600"             },
+    disconnected: { dot: "bg-slate-400",                  text: "Disconnected",  pill: "bg-slate-100 border-slate-200 text-slate-500"      },
   };
   const s = map[status] || map.disconnected;
   return (
@@ -98,26 +99,26 @@ function MqttStatusPill({ status }) {
 function LineSpeedSVG({ liveSpeed }) {
   const W = 1000, H = 72;
   const data = [...LINE_SPEED_HISTORY];
-  // replace last point with live speed (normalised to 0-100, max ~250 u/m)
   if (liveSpeed != null) data[data.length - 1] = Math.min(100, (liveSpeed / 250) * 100);
   const n = data.length;
-  const pts = data.map((v,i) => `${(i/(n-1))*W},${H-(v/100)*H}`).join(" ");
-  const fillPts = `0,${H} ${pts} ${W},${H}`;
-  const plannedY = H - (68/100)*H;
+  const pts      = data.map((v, i) => `${(i / (n - 1)) * W},${H - (v / 100) * H}`).join(" ");
+  const fillPts  = `0,${H} ${pts} ${W},${H}`;
+  const plannedY = H - (68 / 100) * H;
+  const liveCY   = liveSpeed != null ? H - (Math.min(100, (liveSpeed / 250) * 100) / 100) * H : null;
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none" style={{ height:72 }}>
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none" style={{ height: 72 }}>
       <defs>
         <linearGradient id="spd" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor="#6366f1" stopOpacity="0.18"/>
-          <stop offset="100%" stopColor="#6366f1" stopOpacity="0"  />
+          <stop offset="0%"   stopColor="#6366f1" stopOpacity="0.18" />
+          <stop offset="100%" stopColor="#6366f1" stopOpacity="0"    />
         </linearGradient>
       </defs>
       <polygon points={fillPts} fill="url(#spd)" />
-      <line x1={0} y1={plannedY} x2={W} y2={plannedY} stroke="#60a5fa" strokeWidth={1.5} strokeDasharray="7 5"/>
-      <polyline points={pts} fill="none" stroke="#6366f1" strokeWidth={2} strokeLinejoin="round"/>
-      {/* live dot */}
-      {liveSpeed != null && (
-        <circle cx={W} cy={H - (Math.min(100,(liveSpeed/250)*100)/100)*H} r={5} fill="#6366f1" stroke="#fff" strokeWidth={2}/>
+      <line x1={0} y1={plannedY} x2={W} y2={plannedY} stroke="#60a5fa" strokeWidth={1.5} strokeDasharray="7 5" />
+      <polyline points={pts} fill="none" stroke="#6366f1" strokeWidth={2} strokeLinejoin="round" />
+      {liveCY != null && (
+        <circle cx={W} cy={liveCY} r={5} fill="#6366f1" stroke="#fff" strokeWidth={2} />
       )}
     </svg>
   );
@@ -131,7 +132,7 @@ function ProductionGraph({ liveSpeed }) {
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
             <svg className="w-4 h-4 text-indigo-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 17l6-6 4 4 8-8"/>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 17l6-6 4 4 8-8" />
             </svg>
           </div>
           <div>
@@ -141,15 +142,17 @@ function ProductionGraph({ liveSpeed }) {
         </div>
         <div className="flex items-center gap-5 text-[11px] text-slate-500">
           <span className="flex items-center gap-1.5">
-            <svg width="18" height="5"><line x1="0" y1="2.5" x2="18" y2="2.5" stroke="#60a5fa" strokeWidth="1.5" strokeDasharray="4 3"/></svg>
+            <svg width="18" height="5"><line x1="0" y1="2.5" x2="18" y2="2.5" stroke="#60a5fa" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
             Planned
           </span>
           <span className="flex items-center gap-1.5">
-            <svg width="18" height="5"><line x1="0" y1="2.5" x2="18" y2="2.5" stroke="#6366f1" strokeWidth="2"/></svg>
+            <svg width="18" height="5"><line x1="0" y1="2.5" x2="18" y2="2.5" stroke="#6366f1" strokeWidth="2" /></svg>
             Actual
           </span>
           <button className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-500 hover:bg-slate-100 transition-colors text-[11px] font-medium">
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
             Export CSV
           </button>
         </div>
@@ -161,29 +164,29 @@ function ProductionGraph({ liveSpeed }) {
             label: "Produced",
             content: (
               <div className="flex justify-between">
-                {PRODUCED_HISTORY.map((v,i) => (
+                {PRODUCED_HISTORY.map((v, i) => (
                   <div key={i} className={`text-[11px] font-black text-center flex-1
-                    ${v===0?"text-red-500":v>100?"text-emerald-500":"text-slate-700"}`}>{v}</div>
+                    ${v === 0 ? "text-red-500" : v > 100 ? "text-emerald-500" : "text-slate-700"}`}>{v}</div>
                 ))}
               </div>
             ),
           },
           {
             label: "Line Speed",
-            content: <LineSpeedSVG liveSpeed={liveSpeed}/>,
+            content: <LineSpeedSVG liveSpeed={liveSpeed} />,
           },
           {
             label: "Loss Type",
             content: (
               <div className="flex h-12 rounded-lg overflow-hidden ring-1 ring-slate-100">
-                {LOSS_SEGMENTS.map((seg,i) => (
+                {LOSS_SEGMENTS.map((seg, i) => (
                   <div key={i} title={seg.type}
                     className="hover:opacity-75 cursor-pointer transition-opacity"
                     style={{
-                      width:`${seg.end-seg.start}%`, flexShrink:0,
-                      background:LOSS_STYLE[seg.type],
-                      borderRight:seg.type==="yellow"?"2px solid #f59e0b":undefined,
-                    }}/>
+                      width: `${seg.end - seg.start}%`, flexShrink: 0,
+                      background: LOSS_STYLE[seg.type],
+                      borderRight: seg.type === "yellow" ? "2px solid #f59e0b" : undefined,
+                    }} />
                 ))}
               </div>
             ),
@@ -196,7 +199,7 @@ function ProductionGraph({ liveSpeed }) {
         ))}
 
         <div className="flex ml-28 mt-1">
-          {TIME_LABELS.map((t,i) => (
+          {TIME_LABELS.map((t, i) => (
             <div key={i} className="flex-1 text-center text-slate-300 text-[10px]">{t}</div>
           ))}
         </div>
@@ -205,7 +208,7 @@ function ProductionGraph({ liveSpeed }) {
       <div className="flex flex-wrap items-center gap-5 px-6 py-3 bg-slate-50 border-t border-slate-100">
         {LEGEND.map(item => (
           <div key={item.label} className="flex items-center gap-2 text-[11px] text-slate-500">
-            <div className="w-3 h-3 rounded-sm" style={{ background:item.color }}/>
+            <div className="w-3 h-3 rounded-sm" style={{ background: item.color }} />
             {item.label}
           </div>
         ))}
@@ -224,7 +227,7 @@ function KPICard({ label, value, icon, accent, sub, badge, live }) {
       </div>
       <div>
         <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">{label}</p>
-        <div className={`text-[22px] font-black text-slate-900 leading-none tabular-nums transition-all duration-300 ${live?"text-indigo-600":""}`}>
+        <div className={`text-[22px] font-black leading-none tabular-nums transition-all duration-300 ${live ? "text-indigo-600" : "text-slate-900"}`}>
           {value}
         </div>
         {sub && <p className="text-[11px] text-slate-400 mt-1.5">{sub}</p>}
@@ -235,7 +238,6 @@ function KPICard({ label, value, icon, accent, sub, badge, live }) {
 
 // ── Efficiency card ───────────────────────────────────────────────────────────
 function EfficiencyCard({ oee }) {
-  // derive fake avail/perf/quality from OEE for display
   const avail = oee ? Math.min(100, oee + 15).toFixed(1) : 0;
   const perf  = oee ? Math.min(100, oee + 22).toFixed(1) : 0;
   const qual  = oee ? Math.min(100, oee + 30).toFixed(1) : 0;
@@ -248,7 +250,9 @@ function EfficiencyCard({ oee }) {
           <div className="w-7 h-7 rounded-lg bg-violet-50 flex items-center justify-center text-base">🎯</div>
           <span className="font-bold text-slate-800 text-sm">Efficiency</span>
         </div>
-        <Badge color="emerald"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/>Live</Badge>
+        <Badge color="emerald">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />Live
+        </Badge>
       </div>
       <div className="grid grid-cols-2 gap-3">
         {EFFICIENCY_META.map(item => (
@@ -259,7 +263,7 @@ function EfficiencyCard({ oee }) {
             </div>
             <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
               <div className={`h-full rounded-full ${item.tw} transition-all duration-700`}
-                style={{ width:`${Math.min(100, parseFloat(vals[item.key]))}%` }}/>
+                style={{ width: `${Math.min(100, parseFloat(vals[item.key]))}%` }} />
             </div>
           </div>
         ))}
@@ -283,25 +287,25 @@ function Sidebar({ active, setActive }) {
           return (
             <button key={item.label} onClick={() => setActive(item.label)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left text-[13px] font-medium transition-all duration-150 group
-                ${isActive?"bg-indigo-600 text-white shadow-lg shadow-indigo-600/30":"text-white/40 hover:text-white/80 hover:bg-white/5"}`}>
-              <span className={`text-base transition-transform duration-150 ${isActive?"scale-110":"group-hover:scale-105"}`}>{item.icon}</span>
+                ${isActive ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/30" : "text-white/40 hover:text-white/80 hover:bg-white/5"}`}>
+              <span className={`text-base transition-transform duration-150 ${isActive ? "scale-110" : "group-hover:scale-105"}`}>{item.icon}</span>
               <span className="leading-snug truncate">{item.label}</span>
-              {isActive && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-white/60"/>}
+              {isActive && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-white/60" />}
             </button>
           );
         })}
-        <div className="pt-5 px-3">
+        {/* <div className="pt-5 px-3">
           <p className="text-[10px] font-bold text-white/20 uppercase tracking-widest mb-3">System</p>
-          {["👤  Users","⚙  Settings"].map(l => (
+          {["👤  Users", "⚙  Settings"].map(l => (
             <button key={l} className="w-full flex items-center px-0 py-2 text-[13px] text-white/35 hover:text-white/70 transition-colors">{l}</button>
           ))}
         </div>
         <div className="pt-5 px-3">
           <p className="text-[10px] font-bold text-white/20 uppercase tracking-widest mb-2">Devices</p>
           <div className="flex items-center gap-2 text-[12px] text-white/25">
-            <span className="w-1.5 h-1.5 rounded-full bg-white/20"/>No devices connected
+            <span className="w-1.5 h-1.5 rounded-full bg-white/20" />No devices connected
           </div>
-        </div>
+        </div> */}
       </nav>
       <div className="px-4 py-4 border-t border-white/5 flex items-center gap-3 shrink-0">
         <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 flex items-center justify-center text-white text-xs font-bold shrink-0">A</div>
@@ -315,55 +319,52 @@ function Sidebar({ active, setActive }) {
   );
 }
 
-// ── MQTT hook ─────────────────────────────────────────────────────────────────
+// ── MQTT hook (uses npm mqtt — no CDN needed) ─────────────────────────────────
 function useMqtt(onMessage) {
   const [mqttStatus, setMqttStatus] = useState("disconnected");
-  const clientRef = useRef(null);
+  const clientRef    = useRef(null);
   const onMessageRef = useRef(onMessage);
   useEffect(() => { onMessageRef.current = onMessage; }, [onMessage]);
 
   useEffect(() => {
-    // mqtt.js must be available via CDN — loaded in index.html
-    // or installed: npm install mqtt
-    if (typeof window === "undefined") return;
-
-    const mqtt = window.mqtt;
-    if (!mqtt) {
-      console.warn("mqtt.js not found. Add to index.html: <script src='https://unpkg.com/mqtt/dist/mqtt.min.js'></script>");
-      setMqttStatus("error");
-      return;
-    }
-
     setMqttStatus("connecting");
-    const url = `ws://${MQTT_HOST}:${MQTT_WS_PORT}/ws`;
-    const client = mqtt.connect(url, {
+
+    // Vite-compatible: use WebSocket transport explicitly
+    const client = mqtt.connect(`ws://10.156.116.176:8083/mqtt`, {
+      username: "foodsbroker",
+      password: "Engineering@2024",
       reconnectPeriod: 3000,
-      connectTimeout: 5000,
+      connectTimeout:  5000,
+      // Force ws:// protocol so Vite doesn't try tcp
+      protocol: "ws",
     });
     clientRef.current = client;
 
     client.on("connect", () => {
       setMqttStatus("connected");
       client.subscribe(MQTT_TOPIC, { qos: 0 }, err => {
-        if (err) console.error("Subscribe error:", err);
+        if (err) console.error("[MQTT] Subscribe error:", err);
+        else console.log(`[MQTT] Subscribed to ${MQTT_TOPIC}`);
       });
     });
 
-    client.on("message", (topic, payload) => {
+    client.on("message", (_topic, payload) => {
       try {
         const data = JSON.parse(payload.toString());
         onMessageRef.current(data);
       } catch (e) {
-        console.error("MQTT parse error:", e);
+        console.error("[MQTT] Parse error:", e);
       }
     });
 
-    client.on("error",      err => { console.error("MQTT error:", err); setMqttStatus("error"); });
+    client.on("error",      err => { console.error("[MQTT] Error:", err); setMqttStatus("error"); });
     client.on("offline",    ()  => setMqttStatus("disconnected"));
     client.on("reconnect",  ()  => setMqttStatus("connecting"));
     client.on("disconnect", ()  => setMqttStatus("disconnected"));
 
-    return () => { client.end(true); };
+    return () => {
+      client.end(true);
+    };
   }, []);
 
   return mqttStatus;
@@ -371,107 +372,88 @@ function useMqtt(onMessage) {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [activePage, setActivePage] = useState("Dashboard");
+  const [activePage,  setActivePage]  = useState("Dashboard");
   const [lastUpdated, setLastUpdated] = useState(null);
-
-  // Live MQTT data state — fields mapped directly from JSON payload
   const [data, setData] = useState({
-    sku:        null,
-    shift:      null,
-    state:      null,
-    counterIn:  null,
-    counterOut: null,
-    rejects:    null,
-    speed:      null,
-    oee:        null,
-    lineID:     null,
-    plantID:    null,
-    timestamp:  null,
+    sku: null, shift: null, state: null,
+    counterIn: null, counterOut: null, rejects: null,
+    speed: null, oee: null, lineID: null, plantID: null, timestamp: null,
   });
-
-  // Message history for the table
   const [history, setHistory] = useState([]);
 
   const handleMessage = useCallback((msg) => {
     setData({
-      sku:        msg.Mespack_SKU ?? "—",
-      shift:      msg.Mespack_Shift ?? "—",
-      state:      msg.Mespack_Filler_State ?? null,
+      sku:        msg.Mespack_SKU               ?? "—",
+      shift:      msg.Mespack_Shift             ?? "—",
+      state:      msg.Mespack_Filler_State      ?? null,
       counterIn:  msg.Mespack_Filler_Input_Counter  ?? 0,
       counterOut: msg.Mespack_Filler_Output_Counter ?? 0,
       rejects:    msg.Mespack_Filler_Rejects        ?? 0,
       speed:      msg.Mespack_Filler_Speed          ?? 0,
       oee:        msg.Mespack_Filler_OEE            ?? 0,
-      lineID:     msg.lineID   ?? "—",
-      plantID:    msg.plantID  ?? "—",
+      lineID:     msg.lineID  ?? "—",
+      plantID:    msg.plantID ?? "—",
       timestamp:  msg._timestamp ?? Date.now(),
     });
     setLastUpdated(new Date());
     setHistory(prev => [
       {
-        time:   new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit", second:"2-digit" }),
-        in:     msg.Mespack_Filler_Input_Counter,
-        out:    msg.Mespack_Filler_Output_Counter,
-        rej:    msg.Mespack_Filler_Rejects,
-        speed:  msg.Mespack_Filler_Speed?.toFixed(1),
-        oee:    msg.Mespack_Filler_OEE?.toFixed(1),
-        shift:  msg.Mespack_Shift,
-        state:  msg.Mespack_Filler_State,
+        time:  new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        in:    msg.Mespack_Filler_Input_Counter,
+        out:   msg.Mespack_Filler_Output_Counter,
+        rej:   msg.Mespack_Filler_Rejects,
+        speed: msg.Mespack_Filler_Speed?.toFixed(1),
+        oee:   msg.Mespack_Filler_OEE?.toFixed(1),
+        shift: msg.Mespack_Shift,
+        state: msg.Mespack_Filler_State,
       },
-      ...prev.slice(0, 49),   // keep last 50
+      ...prev.slice(0, 49),
     ]);
   }, []);
 
   const mqttStatus = useMqtt(handleMessage);
 
-  // Derived
-  const stateInfo    = FILLER_STATE[data.state] ?? FILLER_STATE[0];
-  const rejectRate   = data.counterIn > 0
-    ? ((data.rejects / data.counterIn) * 100).toFixed(1) : "0.0";
-  const passRate     = data.counterIn > 0
-    ? ((data.counterOut / data.counterIn) * 100).toFixed(1) : "0.0";
+  const stateInfo  = FILLER_STATE[data.state] ?? FILLER_STATE[0];
+  const rejectRate = data.counterIn > 0 ? ((data.rejects / data.counterIn) * 100).toFixed(1) : "0.0";
+  const passRate   = data.counterIn > 0 ? ((data.counterOut / data.counterIn) * 100).toFixed(1) : "0.0";
 
   const kpis = [
     {
-      label:"SKU", icon:"🏷", accent:"bg-indigo-50",
+      label: "SKU", icon: "🏷", accent: "bg-indigo-50",
       value: data.sku ?? <span className="text-slate-300 text-lg">—</span>,
-      sub: data.lineID ? `Line: ${data.lineID}` : "Awaiting data…",
-      badge: <Badge color="emerald"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/>Active</Badge>,
+      sub:   data.lineID !== "—" ? `Line: ${data.lineID}` : "Awaiting data…",
+      badge: <Badge color="emerald"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />Active</Badge>,
     },
     {
-      label:"Status", icon:"⚡", accent:"bg-emerald-50",
+      label: "Status", icon: "⚡", accent: "bg-emerald-50",
       value: <span className={stateInfo.color}>{data.state !== null ? stateInfo.label : "—"}</span>,
-      sub: data.shift ?? "—",
+      sub:   data.shift ?? "—",
       badge: data.state !== null
         ? <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ring-1 ${stateInfo.bg} ${stateInfo.color} ${stateInfo.ring}`}>State {data.state}</span>
         : null,
     },
     {
-      label:"Counter In", icon:"📥", accent:"bg-blue-50",
+      label: "Counter In", icon: "📥", accent: "bg-blue-50",
       value: data.counterIn?.toLocaleString() ?? "—",
-      sub: "Total input count",
-      live: true,
+      sub:   "Total input count", live: true,
     },
     {
-      label:"Counter Out", icon:"📤", accent:"bg-violet-50",
+      label: "Counter Out", icon: "📤", accent: "bg-violet-50",
       value: data.counterOut?.toLocaleString() ?? "—",
-      sub: `${passRate}% pass-through`,
-      live: true,
+      sub:   `${passRate}% pass-through`, live: true,
     },
     {
-      label:"Rejects", icon:"🚫", accent:"bg-red-50",
+      label: "Rejects", icon: "🚫", accent: "bg-red-50",
       value: data.rejects?.toLocaleString() ?? "—",
-      sub: `${rejectRate}% reject rate`,
-      live: true,
+      sub:   `${rejectRate}% reject rate`, live: true,
       badge: data.rejects > 500
         ? <Badge color="red">⚠ High</Badge>
         : data.rejects > 0 ? <Badge color="amber">Monitor</Badge> : null,
     },
     {
-      label:"Speed", icon:"⚡", accent:"bg-amber-50",
+      label: "Speed", icon: "⚡", accent: "bg-amber-50",
       value: data.speed != null ? `${data.speed.toFixed(1)} u/m` : "—",
-      sub: "Units per minute",
-      live: true,
+      sub:   "Units per minute", live: true,
       badge: data.speed >= 150
         ? <Badge color="emerald">On target</Badge>
         : data.speed > 0 ? <Badge color="amber">Below target</Badge> : null,
@@ -479,45 +461,45 @@ export default function App() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50" style={{ fontFamily:"'DM Sans','Segoe UI',sans-serif" }}>
-      <Sidebar active={activePage} setActive={setActivePage}/>
+    <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'DM Sans','Segoe UI',sans-serif" }}>
+      <Sidebar active={activePage} setActive={setActivePage} />
 
       <div className="ml-[220px] flex flex-col min-h-screen">
-        {/* ── Topbar ───────────────────────────────────────────────── */}
+        {/* ── Topbar ─────────────────────────────────────────────── */}
         <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-slate-100 px-8 h-16 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <button className="text-slate-300 hover:text-slate-600 transition-colors p-1 rounded-lg hover:bg-slate-100">☰</button>
             <div className="relative">
               <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
               </svg>
               <input className="bg-slate-100 hover:bg-slate-200 focus:bg-white focus:ring-2 focus:ring-indigo-300 rounded-xl pl-9 pr-4 py-2 text-[13px] text-slate-700 outline-none w-60 transition-all placeholder:text-slate-400"
-                placeholder="Search records, devices…"/>
+                placeholder="Search records, devices…" />
             </div>
           </div>
 
           <div className="flex items-center gap-3">
             <div className="text-[12px] text-slate-400 font-mono hidden lg:flex flex-col items-end">
-              <span>{new Date().toLocaleDateString([], { weekday:"short", month:"short", day:"numeric" })}</span>
+              <span>{new Date().toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</span>
               {lastUpdated && <span className="text-emerald-400">↻ {lastUpdated.toLocaleTimeString()}</span>}
             </div>
-            <div className="h-5 w-px bg-slate-200"/>
-            <MqttStatusPill status={mqttStatus}/>
+            <div className="h-5 w-px bg-slate-200" />
+            <MqttStatusPill status={mqttStatus} />
             <button className="relative w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-all">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 00-5-5.917V4a1 1 0 10-2 0v1.083A6 6 0 006 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 00-5-5.917V4a1 1 0 10-2 0v1.083A6 6 0 006 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
               </svg>
-              <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-red-500 border border-white"/>
+              <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-red-500 border border-white" />
             </button>
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 flex items-center justify-center text-white text-xs font-bold cursor-pointer">A</div>
           </div>
         </header>
 
-        {/* ── MQTT info banner ──────────────────────────────────────── */}
+        {/* ── Connection banner (only when not connected) ─────────── */}
         {mqttStatus !== "connected" && (
           <div className={`mx-8 mt-4 flex items-start gap-3 px-4 py-3 rounded-xl text-sm border
-            ${mqttStatus === "connecting"   ? "bg-amber-50 border-amber-200 text-amber-700"
-            : mqttStatus === "error"        ? "bg-red-50 border-red-200 text-red-700"
+            ${mqttStatus === "connecting" ? "bg-amber-50 border-amber-200 text-amber-700"
+            : mqttStatus === "error"      ? "bg-red-50 border-red-200 text-red-700"
             : "bg-slate-100 border-slate-200 text-slate-600"}`}>
             <span className="text-lg mt-0.5">
               {mqttStatus === "connecting" ? "⏳" : mqttStatus === "error" ? "⚠️" : "🔌"}
@@ -529,20 +511,14 @@ export default function App() {
                 : "MQTT disconnected"}
               </p>
               <p className="text-[12px] opacity-80">
-                {mqttStatus === "error"
-                  ? "Make sure mqtt.js is loaded in your index.html and the broker is reachable at ws://localhost:1886/ws"
-                  : `Subscribing to: ${MQTT_TOPIC}`}
+                Broker: <code className="font-mono">ws://{MQTT_HOST}:{MQTT_WS_PORT}/ws</code>
+                {" · "}Topic: <code className="font-mono text-[10px]">{MQTT_TOPIC}</code>
               </p>
-              {mqttStatus === "error" && (
-                <code className="block mt-1 text-[11px] bg-white/60 px-2 py-1 rounded font-mono">
-                  {"<script src=\"https://unpkg.com/mqtt/dist/mqtt.min.js\"></script>"}
-                </code>
-              )}
             </div>
           </div>
         )}
 
-        {/* ── Main ─────────────────────────────────────────────────── */}
+        {/* ── Main ───────────────────────────────────────────────── */}
         <main className="flex-1 px-8 py-6 space-y-5">
           <div className="flex items-end justify-between">
             <div>
@@ -559,14 +535,14 @@ export default function App() {
 
           {/* KPI row */}
           <div className="grid grid-cols-6 gap-4">
-            {kpis.map(k => <KPICard key={k.label} {...k}/>)}
+            {kpis.map(k => <KPICard key={k.label} {...k} />)}
           </div>
 
           {/* Middle row */}
           <div className="grid grid-cols-3 gap-4">
-            <EfficiencyCard oee={data.oee}/>
+            <EfficiencyCard oee={data.oee} />
 
-            {/* Live message history table */}
+            {/* Live MQTT feed table */}
             <div className="col-span-2 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
               <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
                 <div className="flex items-center gap-2">
@@ -578,7 +554,7 @@ export default function App() {
                 </div>
                 <Badge color={mqttStatus === "connected" ? "emerald" : "slate"}>
                   {mqttStatus === "connected"
-                    ? <><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/>Live</>
+                    ? <><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />Live</>
                     : "Offline"}
                 </Badge>
               </div>
@@ -586,17 +562,17 @@ export default function App() {
               {history.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-14 text-slate-300">
                   <svg className="w-10 h-10 mb-3" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z"/>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z" />
                   </svg>
                   <p className="text-sm font-semibold">Waiting for MQTT messages…</p>
-                  <p className="text-[12px] mt-1">ws://localhost:{MQTT_WS_PORT}/ws</p>
+                  <p className="text-[12px] mt-1 font-mono">ws://{MQTT_HOST}:{MQTT_WS_PORT}/ws</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto max-h-52 overflow-y-auto">
                   <table className="w-full">
                     <thead className="sticky top-0">
                       <tr className="bg-slate-50 border-b border-slate-100">
-                        {["Time","In","Out","Rejects","Speed","OEE","Shift","State"].map(h => (
+                        {["Time", "In", "Out", "Rejects", "Speed", "OEE", "Shift", "State"].map(h => (
                           <th key={h} className="text-left px-4 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
                         ))}
                       </tr>
@@ -605,7 +581,7 @@ export default function App() {
                       {history.map((row, i) => {
                         const si = FILLER_STATE[row.state] ?? FILLER_STATE[0];
                         return (
-                          <tr key={i} className={`border-b border-slate-50 hover:bg-slate-50/60 transition-colors ${i===0?"bg-indigo-50/30":""}`}>
+                          <tr key={i} className={`border-b border-slate-50 hover:bg-slate-50/60 transition-colors ${i === 0 ? "bg-indigo-50/30" : ""}`}>
                             <td className="px-4 py-2.5 text-[11px] text-slate-500 font-mono whitespace-nowrap">{row.time}</td>
                             <td className="px-4 py-2.5 text-[12px] font-semibold text-slate-700 tabular-nums">{row.in?.toLocaleString()}</td>
                             <td className="px-4 py-2.5 text-[12px] font-semibold text-slate-700 tabular-nums">{row.out?.toLocaleString()}</td>
@@ -629,7 +605,7 @@ export default function App() {
           </div>
 
           {/* Production graph — bottom */}
-          <ProductionGraph liveSpeed={data.speed}/>
+          <ProductionGraph liveSpeed={data.speed} />
         </main>
       </div>
     </div>
