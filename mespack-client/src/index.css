@@ -1,1 +1,30 @@
 @import "tailwindcss";
+
+:root {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --color-surface: 248 250 252;
+  --color-surface-elevated: 255 255 255;
+  --color-border: 226 232 240;
+  --color-border-subtle: 241 245 249;
+  --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.04), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+  --shadow-card-hover: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+  --radius-card: 1rem;
+  --radius-button: 0.75rem;
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: rgb(var(--color-surface));
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Smooth horizontal scroll on touch devices */
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+}
