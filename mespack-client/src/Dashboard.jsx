@@ -1,10 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import mqtt from "mqtt"; // npm install mqtt
 
-// ── MQTT config ───────────────────────────────────────────────────────────────
-const MQTT_HOST    = "10.156.116.176";
-const MQTT_WS_PORT = 1883;
-const MQTT_TOPIC   = "Unilever_Ph_Nutrition/Dressings_Halal/Filling_Flexibles/DFOS/Dressings DFOS Params";
+// ── MQTT/Server config (topic for display; connection via server) ───────────────
+const MQTT_TOPIC = "Unilever_Ph_Nutrition/Dressings_Halal/Filling_Flexibles/DFOS/Dressings DFOS Params";
+
+// WebSocket URL: same origin + /ws (proxied to mespack-server in dev, or server serves client in prod)
+function getWsUrl() {
+  const base = import.meta.env.VITE_WS_URL;
+  if (base) {
+    if (base.startsWith("ws://") || base.startsWith("wss://")) return base;
+    const u = new URL(base);
+    return (u.protocol === "https:" ? "wss:" : "ws:") + "//" + u.host + "/ws";
+  }
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/ws`;
+}
 
 // ── Filler state map ──────────────────────────────────────────────────────────
 const FILLER_STATE = {
@@ -390,51 +399,66 @@ function Sidebar({ active, setActive, open, onClose }) {
   );
 }
 
-// ── MQTT hook (uses npm mqtt — no CDN needed) ─────────────────────────────────
+// ── Server WebSocket hook (MQTT is on server; client connects here from any IP) ──
 function useMqtt(onMessage) {
   const [mqttStatus, setMqttStatus] = useState("disconnected");
-  const clientRef    = useRef(null);
   const onMessageRef = useRef(onMessage);
+  const reconnectRef = useRef(null);
+  const wsRef = useRef(null);
+
   useEffect(() => { onMessageRef.current = onMessage; }, [onMessage]);
 
   useEffect(() => {
+    const wsUrl = getWsUrl();
     setMqttStatus("connecting");
 
-    // Vite-compatible: use WebSocket transport explicitly
-    const client = mqtt.connect(`ws://10.156.116.176:8083/mqtt`, {
-      username: "foodsbroker",
-      password: "Engineering@2024",
-      reconnectPeriod: 3000,
-      connectTimeout:  5000,
-      // Force ws:// protocol so Vite doesn't try tcp
-      protocol: "ws",
-    });
-    clientRef.current = client;
+    function connect() {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
-    client.on("connect", () => {
-      setMqttStatus("connected");
-      client.subscribe(MQTT_TOPIC, { qos: 0 }, err => {
-        if (err) console.error("[MQTT] Subscribe error:", err);
-        else console.log(`[MQTT] Subscribed to ${MQTT_TOPIC}`);
-      });
-    });
+      ws.onopen = () => {
+        setMqttStatus("connected");
+        if (reconnectRef.current) {
+          clearInterval(reconnectRef.current);
+          reconnectRef.current = null;
+        }
+      };
 
-    client.on("message", (_topic, payload) => {
-      try {
-        const data = JSON.parse(payload.toString());
-        onMessageRef.current(data);
-      } catch (e) {
-        console.error("[MQTT] Parse error:", e);
-      }
-    });
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "message" && msg.data) {
+            onMessageRef.current(msg.data);
+          } else if (msg.type === "status") {
+            setMqttStatus(msg.status || "disconnected");
+          }
+        } catch (e) {
+          console.error("[WS] Parse error:", e);
+        }
+      };
 
-    client.on("error",      err => { console.error("[MQTT] Error:", err); setMqttStatus("error"); });
-    client.on("offline",    ()  => setMqttStatus("disconnected"));
-    client.on("reconnect",  ()  => setMqttStatus("connecting"));
-    client.on("disconnect", ()  => setMqttStatus("disconnected"));
+      ws.onerror = () => setMqttStatus("error");
+      ws.onclose = () => {
+        wsRef.current = null;
+        setMqttStatus("disconnected");
+        if (!reconnectRef.current) {
+          reconnectRef.current = setInterval(() => {
+            if (!wsRef.current) connect();
+          }, 3000);
+        }
+      };
+    }
 
+    connect();
     return () => {
-      client.end(true);
+      if (reconnectRef.current) {
+        clearInterval(reconnectRef.current);
+        reconnectRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, []);
 
@@ -479,7 +503,7 @@ export default function App() {
         shift: msg.Mespack_Shift,
         state: msg.Mespack_Filler_State,
       },
-      ...prev.slice(0, 49),
+      ...prev.slice(0, 9),
     ]);
   }, []);
 
@@ -609,7 +633,7 @@ export default function App() {
                 : "MQTT disconnected"}
               </p>
               <p className="text-[12px] mt-0.5 text-slate-500">
-                <code className="font-mono text-[11px] bg-white/60 px-1 rounded">ws://{MQTT_HOST}:8083/mqtt</code>
+                <code className="font-mono text-[11px] bg-white/60 px-1 rounded">{typeof window !== "undefined" ? getWsUrl() : "…/ws"}</code>
               </p>
             </div>
           </div>
@@ -666,7 +690,7 @@ export default function App() {
                 <div className="flex flex-col items-center justify-center py-16 text-slate-400 bg-slate-50/50">
                   <IconSignal className="w-12 h-12 mb-4 text-slate-300" />
                   <p className="text-sm font-semibold text-slate-500">Waiting for MQTT messages</p>
-                  <p className="text-[12px] mt-1 font-mono text-slate-400">ws://{MQTT_HOST}:8083/mqtt</p>
+                  <p className="text-[12px] mt-1 font-mono text-slate-400">Connecting via server</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto overflow-y-auto max-h-56 scroll-smooth touch-pan-x">
