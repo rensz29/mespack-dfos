@@ -36,6 +36,71 @@ const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 const clients = new Set();
 
+// ── In-memory history buffer (last 6 hours) ────────────────────────────────────
+const HISTORY_WINDOW_MS = 6 * 60 * 60 * 1000;
+const SNAPSHOT_CHUNK_SIZE = 2000;
+const history = [];
+
+function minifyForHistory(data) {
+  const nowTs = Date.now();
+  const ts = (typeof data?._timestamp === "number" && Number.isFinite(data._timestamp))
+    ? data._timestamp
+    : nowTs;
+
+  const out = {
+    _timestamp: ts,
+    Mespack_Filler_Output_Counter: data?.Mespack_Filler_Output_Counter,
+    Mespack_Filler_Speed: data?.Mespack_Filler_Speed,
+    Mespack_Filler_State: data?.Mespack_Filler_State,
+  };
+
+  // Keep a loss key if present (so client can display real loss type instead of derived)
+  const lossKeys = [
+    "Mespack_Loss_Type",
+    "Mespack_LossType",
+    "Mespack_Filler_Loss_Type",
+    "Mespack_Filler_LossType",
+    "Mespack_Filler_Loss_Category",
+    "Mespack_Filler_Stop_Reason",
+    "Mespack_Stop_Reason",
+    "Mespack_Downtime_Type",
+    "Mespack_DowntimeType",
+    "LossType",
+    "lossType",
+  ];
+  for (const k of lossKeys) {
+    if (data?.[k] != null && data?.[k] !== "") {
+      out[k] = data[k];
+      break;
+    }
+  }
+
+  return out;
+}
+
+function pushHistory(topic, data) {
+  const item = { ts: Date.now(), topic, data: minifyForHistory(data) };
+  history.push(item);
+
+  const cutoff = Date.now() - HISTORY_WINDOW_MS;
+  let keepIdx = 0;
+  while (keepIdx < history.length && history[keepIdx].ts < cutoff) keepIdx++;
+  if (keepIdx > 0) history.splice(0, keepIdx);
+}
+
+function sendSnapshot(ws) {
+  const snapshot = history.map(({ topic, data }) => ({ topic, data }));
+  const total = Math.ceil(snapshot.length / SNAPSHOT_CHUNK_SIZE) || 1;
+  if (snapshot.length === 0) {
+    ws.send(JSON.stringify({ type: "snapshot", mode: "full", data: [] }));
+    return;
+  }
+  for (let i = 0; i < total; i++) {
+    const chunk = snapshot.slice(i * SNAPSHOT_CHUNK_SIZE, (i + 1) * SNAPSHOT_CHUNK_SIZE);
+    ws.send(JSON.stringify({ type: "snapshot", mode: "chunk", index: i, total, data: chunk }));
+  }
+}
+
 function broadcast(data) {
   const payload = JSON.stringify(data);
   clients.forEach((ws) => {
@@ -65,6 +130,13 @@ wss.on("connection", (ws, req) => {
 
   // Optional: send current connection status
   ws.send(JSON.stringify({ type: "status", status: mqttClient?.connected ? "connected" : "disconnected" }));
+
+  // Send last 6 hours snapshot so new clients can render analytics immediately
+  try {
+    sendSnapshot(ws);
+  } catch (e) {
+    console.error("[WS] snapshot error:", e.message);
+  }
 });
 
 // ── MQTT client (server-side, TCP – no CORS) ────────────────────────────────────
@@ -94,6 +166,7 @@ function connectMqtt() {
     try {
       const raw = payload.toString();
       const data = JSON.parse(raw);
+      pushHistory(topic, data);
       broadcast({ type: "message", topic, data });
     } catch (e) {
       console.error("[MQTT] parse error:", e.message);

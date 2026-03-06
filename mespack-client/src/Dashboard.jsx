@@ -3,6 +3,13 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ── MQTT/Server config (topic for display; connection via server) ───────────────
 const MQTT_TOPIC = "Unilever_Ph_Nutrition/Dressings_Halal/Filling_Flexibles/DFOS/Dressings DFOS Params";
 
+// ── Realtime overview window (last 6 hours) ────────────────────────────────────
+const OVERVIEW_WINDOW_HOURS = 6;
+const OVERVIEW_WINDOW_MS = OVERVIEW_WINDOW_HOURS * 60 * 60 * 1000;
+const OVERVIEW_BIN_MS = 30 * 60 * 1000; // 30 minutes
+const SPEED_MAX_UPM = 250;              // chart scale (units/min)
+const SPEED_TARGET_UPM = 170;           // dashed line target (approx 68% of 250)
+
 // WebSocket URL: same origin + /ws (proxied to mespack-server in dev, or server serves client in prod)
 function getWsUrl() {
   const base = import.meta.env.VITE_WS_URL;
@@ -17,40 +24,26 @@ function getWsUrl() {
 
 // ── Filler state map ──────────────────────────────────────────────────────────
 const FILLER_STATE = {
-  0: { label: "Idle",     color: "text-slate-400",   bg: "bg-slate-50",   ring: "ring-slate-200"   },
-  1: { label: "Starting", color: "text-amber-500",   bg: "bg-amber-50",   ring: "ring-amber-200"   },
-  2: { label: "Running",  color: "text-emerald-500", bg: "bg-emerald-50", ring: "ring-emerald-200" },
-  3: { label: "Stopping", color: "text-amber-500",   bg: "bg-amber-50",   ring: "ring-amber-200"   },
-  4: { label: "Stopped",  color: "text-red-500",     bg: "bg-red-50",     ring: "ring-red-200"     },
-  5: { label: "Fault",    color: "text-red-600",     bg: "bg-red-50",     ring: "ring-red-200"     },
-  6: { label: "Running",  color: "text-emerald-500", bg: "bg-emerald-50", ring: "ring-emerald-200" },
+  0:  { label: "Off",          tone: "neutral", color: "text-slate-500",   bg: "bg-slate-50",   ring: "ring-slate-200",   dot: "bg-slate-400"   },
+  1:  { label: "Clearing",     tone: "warn",    color: "text-amber-700",   bg: "bg-amber-50",   ring: "ring-amber-200",   dot: "bg-amber-500"   },
+  2:  { label: "Stopped",      tone: "danger",  color: "text-red-700",     bg: "bg-red-50",     ring: "ring-red-200",     dot: "bg-red-500"     },
+  3:  { label: "Starting",     tone: "warn",    color: "text-amber-700",   bg: "bg-amber-50",   ring: "ring-amber-200",   dot: "bg-amber-500"   },
+  4:  { label: "Idle",         tone: "neutral", color: "text-slate-500",   bg: "bg-slate-50",   ring: "ring-slate-200",   dot: "bg-slate-400"   },
+  5:  { label: "Suspended",    tone: "danger",  color: "text-red-700",     bg: "bg-red-50",     ring: "ring-red-200",     dot: "bg-red-500"     },
+  6:  { label: "Running",      tone: "ok",      color: "text-emerald-700", bg: "bg-emerald-50", ring: "ring-emerald-200", dot: "bg-emerald-500" },
+  7:  { label: "Stopping",     tone: "danger",  color: "text-red-700",     bg: "bg-red-50",     ring: "ring-red-200",     dot: "bg-red-500"     },
+  8:  { label: "Aborting",     tone: "danger",  color: "text-red-700",     bg: "bg-red-50",     ring: "ring-red-200",     dot: "bg-red-500"     },
+  9:  { label: "Aborted",      tone: "danger",  color: "text-red-700",     bg: "bg-red-50",     ring: "ring-red-200",     dot: "bg-red-500"     },
+  10: { label: "Holding",      tone: "warn",    color: "text-orange-700",  bg: "bg-orange-50",  ring: "ring-orange-200",  dot: "bg-orange-500"  },
+  11: { label: "Held",         tone: "warn",    color: "text-orange-700",  bg: "bg-orange-50",  ring: "ring-orange-200",  dot: "bg-orange-500"  },
+  12: { label: "Unholding",    tone: "warn",    color: "text-orange-700",  bg: "bg-orange-50",  ring: "ring-orange-200",  dot: "bg-orange-500"  },
+  13: { label: "Suspending",   tone: "warn",    color: "text-orange-700",  bg: "bg-orange-50",  ring: "ring-orange-200",  dot: "bg-orange-500"  },
+  14: { label: "Unsuspending", tone: "warn",    color: "text-orange-700",  bg: "bg-orange-50",  ring: "ring-orange-200",  dot: "bg-orange-500"  },
+  15: { label: "Resetting",    tone: "warn",    color: "text-orange-700",  bg: "bg-orange-50",  ring: "ring-orange-200",  dot: "bg-orange-500"  },
+  16: { label: "Completing",   tone: "warn",    color: "text-amber-700",   bg: "bg-amber-50",   ring: "ring-amber-200",   dot: "bg-amber-500"   },
+  17: { label: "Complete",     tone: "ok",      color: "text-emerald-700", bg: "bg-emerald-50", ring: "ring-emerald-200", dot: "bg-emerald-500" },
 };
 
-// ── Static graph data ─────────────────────────────────────────────────────────
-const TIME_LABELS = [
-  "6:00","6:30","7:00","7:30","8:00","8:30","9:00",
-  "9:30","10:00","10:30","11:00","11:30","12:00","12:30","13:00","13:30","14:00",
-];
-const PRODUCED_HISTORY = [33,152,111,80,120,92,0,58,60,138,151,147,126,164,117,91];
-const LINE_SPEED_HISTORY = [
-  20,65,68,70,68,70,70,70,70,68,35,20,65,68,70,70,68,70,70,35,20,65,68,70,
-  70,68,70,70,35,20,65,68,70,70,68,70,70,35,20,65,68,70,70,68,70,70,35,20,
-  65,68,70,70,68,70,70,35,20,65,68,70,70,68,70,70,35,20,65,68,70,70,68,70,
-  70,35,20,65,68,70,70,68,70,70,35,20,65,68,70,70,68,70,70,35,20,65,68,70,
-  70,68,70,70,35,20,65,68,
-];
-const LOSS_SEGMENTS = [
-  { start:0,  end:5,  type:"blue"   },{ start:5,  end:8,  type:"yellow" },
-  { start:8,  end:17, type:"green"  },{ start:17, end:22, type:"red"    },
-  { start:22, end:30, type:"green"  },{ start:30, end:32, type:"yellow" },
-  { start:32, end:38, type:"green"  },{ start:38, end:43, type:"blue"   },
-  { start:43, end:44, type:"yellow" },{ start:44, end:52, type:"green"  },
-  { start:52, end:57, type:"red"    },{ start:57, end:63, type:"green"  },
-  { start:63, end:64, type:"yellow" },{ start:64, end:72, type:"green"  },
-  { start:72, end:77, type:"red"    },{ start:77, end:83, type:"green"  },
-  { start:83, end:84, type:"yellow" },{ start:84, end:92, type:"green"  },
-  { start:92, end:97, type:"red"    },{ start:97, end:100,type:"green"  },
-];
 const LOSS_STYLE = {
   blue:"#bfdbfe", red:"#fecaca", yellow:"#fde68a", green:"#d1fae5",
 };
@@ -82,6 +75,18 @@ const IconTag = ({ className = "w-5 h-5" }) => (
 );
 const IconBolt = ({ className = "w-5 h-5" }) => (
   <svg className={className} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" /></svg>
+);
+const IconPlay = ({ className = "w-5 h-5" }) => (
+  <svg className={className} fill="currentColor" viewBox="0 0 24 24"><path d="M8.2 5.7a1.2 1.2 0 0 0-1.8 1.04v10.52a1.2 1.2 0 0 0 1.8 1.04l9.6-5.26a1.2 1.2 0 0 0 0-2.08L8.2 5.7z" /></svg>
+);
+const IconStop = ({ className = "w-5 h-5" }) => (
+  <svg className={className} fill="currentColor" viewBox="0 0 24 24"><path d="M7 7a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V7z" /></svg>
+);
+const IconPause = ({ className = "w-5 h-5" }) => (
+  <svg className={className} fill="currentColor" viewBox="0 0 24 24"><path d="M7 6a2 2 0 0 1 2-2h1a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V6zm10 0a2 2 0 0 1 2-2h1a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2V6z" /></svg>
+);
+const IconAlert = ({ className = "w-5 h-5" }) => (
+  <svg className={className} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86l-8.1 14.04A2 2 0 0 0 3.9 21h16.2a2 2 0 0 0 1.72-3.1l-8.1-14.04a2 2 0 0 0-3.43 0z" /></svg>
 );
 const IconInbox = ({ className = "w-5 h-5" }) => (
   <svg className={className} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 13.5h3.86a2.25 2.25 0 012.012 1.424l.256 1.912a2.25 2.25 0 002.013 1.424h3.218a2.25 2.25 0 002.013-1.424l.256-1.912a2.25 2.25 0 012.013-1.424h3.86m-19.5 0V6a2.25 2.25 0 012.25-2.25h15A2.25 2.25 0 0121.75 6v7.5m-19.5 0A2.25 2.25 0 005.25 16.5h13.5A2.25 2.25 0 0021.75 14.25m-19.5 0v7.5a2.25 2.25 0 002.25 2.25h15a2.25 2.25 0 002.25-2.25v-7.5" /></svg>
@@ -118,6 +123,210 @@ const EFFICIENCY_META = [
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+function formatHM(ts) {
+  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function parseTimestamp(raw) {
+  if (raw == null) return Date.now();
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+    const d = Date.parse(raw);
+    if (Number.isFinite(d)) return d;
+  }
+  return Date.now();
+}
+
+function deriveLossTypeFromState(state) {
+  // If MQTT does not provide a loss field, we derive a useful category from machine state.
+  // This maps cleanly to the existing legend colors.
+  if (state === 6 || state === 17) return "Running";
+  if (state === 1 || state === 3 || state === 10 || state === 11 || state === 12 || state === 13 || state === 14 || state === 15 || state === 16) return "Minor Stop";
+  if (state === 2 || state === 5 || state === 7 || state === 8 || state === 9) return "Unplanned Downtime";
+  return "Planned Downtime";
+}
+
+function getStateMeta(state) {
+  const s = FILLER_STATE?.[state];
+  if (s) return s;
+  if (state == null) return { label: "—", tone: "neutral", color: "text-slate-400", bg: "bg-slate-50", ring: "ring-slate-200", dot: "bg-slate-300" };
+  return { label: `Unknown`, tone: "neutral", color: "text-slate-500", bg: "bg-slate-50", ring: "ring-slate-200", dot: "bg-slate-400" };
+}
+
+function StatePill({ state, size = "md", showCode = true }) {
+  const s = getStateMeta(state);
+  const sizes = {
+    sm: { pad: "px-2 py-0.5", text: "text-[11px]", dot: "w-1.5 h-1.5", round: "rounded-lg" },
+    md: { pad: "px-2.5 py-1", text: "text-[12px]", dot: "w-2 h-2", round: "rounded-xl" },
+    lg: { pad: "px-3 py-1.5", text: "text-[13px]", dot: "w-2.5 h-2.5", round: "rounded-2xl" },
+  };
+  const sz = sizes[size] ?? sizes.md;
+  return (
+    <span className={`inline-flex items-center gap-2 font-semibold ring-1 ${sz.pad} ${sz.text} ${sz.round} ${s.bg} ${s.color} ${s.ring}`}>
+      <span className={`${sz.dot} rounded-full ${s.dot} ${s.tone === "ok" ? "animate-pulse" : ""}`} />
+      <span className="truncate">{s.label}</span>
+      {showCode && state != null && (
+        <span className="font-mono text-[10px] opacity-70">#{state}</span>
+      )}
+    </span>
+  );
+}
+
+function getStateKpiVisual(state) {
+  const s = getStateMeta(state);
+  const accent = s.tone === "ok" ? "bg-emerald-50"
+    : s.tone === "danger" ? "bg-red-50"
+    : s.tone === "warn" ? "bg-amber-50"
+    : "bg-slate-50";
+  const iconColor = s.tone === "ok"
+    ? "text-emerald-600"
+    : s.tone === "danger"
+      ? "text-red-600"
+      : s.tone === "warn"
+        ? "text-amber-600"
+        : "text-slate-500";
+  // Keep icons consistent with the rest of the KPI row (outline style)
+  const icon = <IconBolt className={`w-5 h-5 ${iconColor}`} />;
+  return { accent, icon };
+}
+
+function extractLossType(msg) {
+  const candidates = [
+    "Mespack_Loss_Type",
+    "Mespack_LossType",
+    "Mespack_Filler_Loss_Type",
+    "Mespack_Filler_LossType",
+    "Mespack_Filler_Loss_Category",
+    "Mespack_Filler_Stop_Reason",
+    "Mespack_Stop_Reason",
+    "Mespack_Downtime_Type",
+    "Mespack_DowntimeType",
+    "LossType",
+    "lossType",
+  ];
+  for (const k of candidates) {
+    if (msg && msg[k] != null && msg[k] !== "") return String(msg[k]);
+  }
+  return null;
+}
+
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function buildTicks(nowTs, windowMs, binMs) {
+  const windowStart = nowTs - windowMs;
+  const ticks = [windowStart];
+  for (let t = windowStart + binMs; t < nowTs; t += binMs) ticks.push(t);
+  ticks.push(nowTs);
+  return { windowStart, ticks };
+}
+
+function downsampleNumeric(series, startTs, endTs, targetPoints, pick) {
+  const duration = Math.max(1, endTs - startTs);
+  const bucketMs = Math.max(1000, Math.floor(duration / targetPoints));
+  const out = [];
+  let idx = 0;
+  while (idx < series.length && series[idx].ts < startTs) idx++;
+  for (let bStart = startTs; bStart < endTs; bStart += bucketMs) {
+    const bEnd = bStart + bucketMs;
+    let sum = 0;
+    let count = 0;
+    while (idx < series.length && series[idx].ts < bEnd) {
+      const v = pick(series[idx]);
+      if (typeof v === "number" && Number.isFinite(v)) {
+        sum += v;
+        count += 1;
+      }
+      idx++;
+    }
+    out.push(count > 0 ? sum / count : null);
+  }
+  return out;
+}
+
+function downsampleLast(series, startTs, endTs, targetPoints, pick) {
+  const duration = Math.max(1, endTs - startTs);
+  const bucketMs = Math.max(1000, Math.floor(duration / targetPoints));
+  const out = [];
+  let idx = 0;
+  while (idx < series.length && series[idx].ts < startTs) idx++;
+  for (let bStart = startTs; bStart < endTs; bStart += bucketMs) {
+    const bEnd = bStart + bucketMs;
+    let last = null;
+    while (idx < series.length && series[idx].ts < bEnd) {
+      const v = pick(series[idx]);
+      if (v != null && v !== "") last = v;
+      idx++;
+    }
+    out.push(last);
+  }
+  return out;
+}
+
+function lossTypeToColorKey(lossType) {
+  const t = String(lossType || "").toLowerCase();
+  if (t.includes("running")) return "green";
+  if (t.includes("minor")) return "yellow";
+  if (t.includes("unplanned") || t.includes("fault") || t.includes("stop")) return "red";
+  if (t.includes("planned") || t.includes("idle")) return "blue";
+  return "blue";
+}
+
+function buildLossSegments(lossSeries) {
+  const n = lossSeries.length;
+  if (!n) return [];
+  const segs = [];
+  let start = 0;
+  let curKey = lossTypeToColorKey(lossSeries[0]);
+  for (let i = 1; i < n; i++) {
+    const nextKey = lossTypeToColorKey(lossSeries[i]);
+    if (nextKey !== curKey) {
+      segs.push({ start: (start / n) * 100, end: (i / n) * 100, type: curKey });
+      start = i;
+      curKey = nextKey;
+    }
+  }
+  segs.push({ start: (start / n) * 100, end: 100, type: curKey });
+  return segs;
+}
+
+function computeOverview(series, nowTs) {
+  const { windowStart, ticks } = buildTicks(nowTs, OVERVIEW_WINDOW_MS, OVERVIEW_BIN_MS);
+  const producedBins = new Array(ticks.length - 1).fill(0);
+
+  // Produced = sum of CounterOut deltas per bin (handles counter reset)
+  for (let i = 1; i < series.length; i++) {
+    const prev = series[i - 1];
+    const cur = series[i];
+    if (cur.ts < windowStart) continue;
+    const prevOut = typeof prev.counterOut === "number" ? prev.counterOut : 0;
+    const curOut = typeof cur.counterOut === "number" ? cur.counterOut : 0;
+    let delta = curOut - prevOut;
+    if (!Number.isFinite(delta)) continue;
+    if (delta < 0) delta = curOut; // counter reset
+    const binIdx = clamp(Math.floor((cur.ts - ticks[0]) / OVERVIEW_BIN_MS), 0, producedBins.length - 1);
+    producedBins[binIdx] += delta;
+  }
+
+  // Downsample for charts (keeps UI fast while still updating every second)
+  const speedSeries = downsampleNumeric(series, windowStart, nowTs, 600, (s) => s.speed);
+  const lossSeries = downsampleLast(series, windowStart, nowTs, 600, (s) => s.lossType);
+  const lossSegments = buildLossSegments(lossSeries);
+
+  return {
+    nowTs,
+    windowStart,
+    ticks,
+    producedBins: producedBins.map(v => Math.round(v)),
+    speedSeries,
+    lossSegments,
+    rangeText: `${formatHM(nowTs - OVERVIEW_WINDOW_MS)} – ${formatHM(nowTs)}`,
+  };
+}
+
 function Badge({ children, color = "emerald" }) {
   const m = {
     emerald: "bg-emerald-50 text-emerald-700 ring-emerald-200/80",
@@ -150,15 +359,20 @@ function MqttStatusPill({ status }) {
 }
 
 // ── SVG line-speed chart ──────────────────────────────────────────────────────
-function LineSpeedSVG({ liveSpeed }) {
+function LineSpeedSVG({ speedSeries, liveSpeed }) {
   const W = 1000, H = 72;
-  const data = [...LINE_SPEED_HISTORY];
-  if (liveSpeed != null) data[data.length - 1] = Math.min(100, (liveSpeed / 250) * 100);
+  const base = Array.isArray(speedSeries) && speedSeries.length > 0
+    ? speedSeries.map(v => (typeof v === "number" ? (v / SPEED_MAX_UPM) * 100 : null))
+    : [];
+  const filled = base.length > 0 ? base.map(v => (v == null ? 0 : clamp(v, 0, 100))) : [0];
+  // Ensure live point shows immediately (even if bucket is sparse)
+  if (liveSpeed != null && filled.length > 0) filled[filled.length - 1] = clamp((liveSpeed / SPEED_MAX_UPM) * 100, 0, 100);
+  const data = filled.length >= 2 ? filled : [filled[0] ?? 0, filled[0] ?? 0];
   const n = data.length;
   const pts      = data.map((v, i) => `${(i / (n - 1)) * W},${H - (v / 100) * H}`).join(" ");
   const fillPts  = `0,${H} ${pts} ${W},${H}`;
-  const plannedY = H - (68 / 100) * H;
-  const liveCY   = liveSpeed != null ? H - (Math.min(100, (liveSpeed / 250) * 100) / 100) * H : null;
+  const plannedY = H - clamp((SPEED_TARGET_UPM / SPEED_MAX_UPM) * 100, 0, 100) / 100 * H;
+  const liveCY   = liveSpeed != null ? H - (clamp((liveSpeed / SPEED_MAX_UPM) * 100, 0, 100) / 100) * H : null;
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none" style={{ height: 72 }}>
@@ -179,7 +393,12 @@ function LineSpeedSVG({ liveSpeed }) {
 }
 
 // ── Production graph ──────────────────────────────────────────────────────────
-function ProductionGraph({ liveSpeed }) {
+function ProductionGraph({ liveSpeed, overview }) {
+  const produced = overview?.producedBins ?? [];
+  const ticks = overview?.ticks ?? [];
+  const lossSegments = overview?.lossSegments ?? [];
+  const rangeText = overview?.rangeText ?? "Last 6 hours";
+
   return (
     <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 px-4 sm:px-6 py-4 border-b border-slate-100">
@@ -189,7 +408,7 @@ function ProductionGraph({ liveSpeed }) {
           </div>
           <div className="min-w-0">
             <h2 className="font-bold text-slate-800 text-sm leading-none">Production Overview</h2>
-            <p className="text-slate-500 text-[12px] mt-0.5">Line performance · 6:00 – 14:00</p>
+            <p className="text-slate-500 text-[12px] mt-0.5">Line performance · {rangeText}</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3 sm:gap-5 text-[12px] text-slate-500">
@@ -215,7 +434,7 @@ function ProductionGraph({ liveSpeed }) {
               label: "Produced",
               content: (
                 <div className="flex justify-between">
-                  {PRODUCED_HISTORY.map((v, i) => (
+                  {(produced.length ? produced : [0]).map((v, i) => (
                     <div key={i} className={`text-[11px] font-black text-center flex-1 min-w-0
                       ${v === 0 ? "text-red-500" : v > 100 ? "text-emerald-500" : "text-slate-700"}`}>{v}</div>
                   ))}
@@ -224,13 +443,13 @@ function ProductionGraph({ liveSpeed }) {
             },
             {
               label: "Line Speed",
-              content: <LineSpeedSVG liveSpeed={liveSpeed} />,
+              content: <LineSpeedSVG speedSeries={overview?.speedSeries} liveSpeed={liveSpeed} />,
             },
             {
               label: "Loss Type",
               content: (
                 <div className="flex h-10 sm:h-12 rounded-lg overflow-hidden ring-1 ring-slate-100">
-                  {LOSS_SEGMENTS.map((seg, i) => (
+                  {(lossSegments.length ? lossSegments : [{ start: 0, end: 100, type: "blue" }]).map((seg, i) => (
                     <div key={i} title={seg.type}
                       className="hover:opacity-75 cursor-pointer transition-opacity"
                       style={{
@@ -250,8 +469,8 @@ function ProductionGraph({ liveSpeed }) {
           ))}
 
           <div className="flex ml-0 sm:ml-24 mt-1">
-            {TIME_LABELS.map((t, i) => (
-              <div key={i} className="flex-1 text-center text-slate-300 text-[10px] min-w-0">{t}</div>
+            {(ticks.length ? ticks : [Date.now() - OVERVIEW_WINDOW_MS, Date.now()]).map((t, i) => (
+              <div key={i} className="flex-1 text-center text-slate-300 text-[10px] min-w-0">{formatHM(t)}</div>
             ))}
           </div>
         </div>
@@ -400,13 +619,16 @@ function Sidebar({ active, setActive, open, onClose }) {
 }
 
 // ── Server WebSocket hook (MQTT is on server; client connects here from any IP) ──
-function useMqtt(onMessage) {
+function useMqtt({ onMessage, onSnapshot }) {
   const [mqttStatus, setMqttStatus] = useState("disconnected");
   const onMessageRef = useRef(onMessage);
+  const onSnapshotRef = useRef(onSnapshot);
+  const snapshotPartsRef = useRef({ total: 0, got: 0, chunks: [] });
   const reconnectRef = useRef(null);
   const wsRef = useRef(null);
 
   useEffect(() => { onMessageRef.current = onMessage; }, [onMessage]);
+  useEffect(() => { onSnapshotRef.current = onSnapshot; }, [onSnapshot]);
 
   useEffect(() => {
     const wsUrl = getWsUrl();
@@ -429,6 +651,26 @@ function useMqtt(onMessage) {
           const msg = JSON.parse(event.data);
           if (msg.type === "message" && msg.data) {
             onMessageRef.current(msg.data);
+          } else if (msg.type === "snapshot") {
+            // Server may send a single snapshot or multiple chunks.
+            if (msg.mode === "chunk" && Array.isArray(msg.data) && Number.isFinite(msg.total)) {
+              const st = snapshotPartsRef.current;
+              if (st.total !== msg.total) {
+                snapshotPartsRef.current = { total: msg.total, got: 0, chunks: new Array(msg.total) };
+              }
+              const cur = snapshotPartsRef.current;
+              if (msg.index >= 0 && msg.index < cur.total && !cur.chunks[msg.index]) {
+                cur.chunks[msg.index] = msg.data;
+                cur.got += 1;
+              }
+              if (cur.got === cur.total) {
+                const all = cur.chunks.flat().filter(Boolean);
+                snapshotPartsRef.current = { total: 0, got: 0, chunks: [] };
+                onSnapshotRef.current?.(all);
+              }
+            } else if (Array.isArray(msg.data)) {
+              onSnapshotRef.current?.(msg.data);
+            }
           } else if (msg.type === "status") {
             setMqttStatus(msg.status || "disconnected");
           }
@@ -476,38 +718,94 @@ export default function App() {
     speed: null, oee: null, lineID: null, plantID: null, timestamp: null,
   });
   const [history, setHistory] = useState([]);
+  const [overview, setOverview] = useState(() => computeOverview([], Date.now()));
+  const seriesRef = useRef([]);
 
-  const handleMessage = useCallback((msg) => {
-    setData({
-      sku:        msg.Mespack_SKU               ?? "—",
-      shift:      msg.Mespack_Shift             ?? "—",
-      state:      msg.Mespack_Filler_State      ?? null,
-      counterIn:  msg.Mespack_Filler_Input_Counter  ?? 0,
-      counterOut: msg.Mespack_Filler_Output_Counter ?? 0,
-      rejects:    msg.Mespack_Filler_Rejects        ?? 0,
-      speed:      msg.Mespack_Filler_Speed          ?? 0,
-      oee:        msg.Mespack_Filler_OEE            ?? 0,
-      lineID:     msg.lineID  ?? "—",
-      plantID:    msg.plantID ?? "—",
-      timestamp:  msg._timestamp ?? Date.now(),
-    });
-    setLastUpdated(new Date());
-    setHistory(prev => [
-      {
-        time:  new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-        in:    msg.Mespack_Filler_Input_Counter,
-        out:   msg.Mespack_Filler_Output_Counter,
-        rej:   msg.Mespack_Filler_Rejects,
-        speed: msg.Mespack_Filler_Speed?.toFixed(1),
-        oee:   msg.Mespack_Filler_OEE?.toFixed(1),
-        shift: msg.Mespack_Shift,
-        state: msg.Mespack_Filler_State,
-      },
-      ...prev.slice(0, 9),
-    ]);
+  const ingestMessage = useCallback((msg, { updateUi } = { updateUi: true }) => {
+    const nowTs = Date.now();
+    const ts = parseTimestamp(msg?._timestamp ?? msg?.timestamp ?? msg?.ts ?? nowTs);
+
+    const state = msg?.Mespack_Filler_State ?? null;
+    const explicitLoss = extractLossType(msg);
+    const lossType = explicitLoss ?? deriveLossTypeFromState(state);
+
+    const sample = {
+      ts,
+      counterOut: typeof msg?.Mespack_Filler_Output_Counter === "number" ? msg.Mespack_Filler_Output_Counter : Number(msg?.Mespack_Filler_Output_Counter),
+      speed: typeof msg?.Mespack_Filler_Speed === "number" ? msg.Mespack_Filler_Speed : Number(msg?.Mespack_Filler_Speed),
+      lossType,
+      state,
+    };
+
+    const nextSeries = [...seriesRef.current, sample];
+    const cutoff = nowTs - OVERVIEW_WINDOW_MS - OVERVIEW_BIN_MS; // keep a little for bin boundaries
+    let keepIdx = 0;
+    while (keepIdx < nextSeries.length && nextSeries[keepIdx].ts < cutoff) keepIdx++;
+    const pruned = keepIdx > 0 ? nextSeries.slice(keepIdx) : nextSeries;
+    seriesRef.current = pruned;
+    setOverview(computeOverview(pruned, nowTs));
+
+    if (updateUi) {
+      setData({
+        sku:        msg.Mespack_SKU               ?? "—",
+        shift:      msg.Mespack_Shift             ?? "—",
+        state:      state,
+        counterIn:  msg.Mespack_Filler_Input_Counter  ?? 0,
+        counterOut: msg.Mespack_Filler_Output_Counter ?? 0,
+        rejects:    msg.Mespack_Filler_Rejects        ?? 0,
+        speed:      msg.Mespack_Filler_Speed          ?? 0,
+        oee:        msg.Mespack_Filler_OEE            ?? 0,
+        lineID:     msg.lineID  ?? "—",
+        plantID:    msg.plantID ?? "—",
+        timestamp:  ts,
+      });
+      setLastUpdated(new Date());
+      setHistory(prev => [
+        {
+          time:  new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+          in:    msg.Mespack_Filler_Input_Counter,
+          out:   msg.Mespack_Filler_Output_Counter,
+          rej:   msg.Mespack_Filler_Rejects,
+          speed: msg.Mespack_Filler_Speed?.toFixed?.(1) ?? String(msg.Mespack_Filler_Speed ?? ""),
+          oee:   msg.Mespack_Filler_OEE?.toFixed?.(1) ?? String(msg.Mespack_Filler_OEE ?? ""),
+          shift: msg.Mespack_Shift,
+          state,
+        },
+        ...prev.slice(0, 9),
+      ]);
+    }
   }, []);
 
-  const mqttStatus = useMqtt(handleMessage);
+  const handleSnapshot = useCallback((items) => {
+    // Snapshot items come as [{ topic, data }] from server, with minimized payload.
+    const nowTs = Date.now();
+    const rawMsgs = (Array.isArray(items) ? items : [])
+      .map(it => it?.data)
+      .filter(Boolean);
+
+    const cutoff = nowTs - OVERVIEW_WINDOW_MS - OVERVIEW_BIN_MS;
+    const series = rawMsgs.map((msg) => {
+      const ts = parseTimestamp(msg?._timestamp ?? msg?.timestamp ?? msg?.ts ?? nowTs);
+      const state = msg?.Mespack_Filler_State ?? null;
+      const explicitLoss = extractLossType(msg);
+      const lossType = explicitLoss ?? deriveLossTypeFromState(state);
+      return {
+        ts,
+        counterOut: typeof msg?.Mespack_Filler_Output_Counter === "number" ? msg.Mespack_Filler_Output_Counter : Number(msg?.Mespack_Filler_Output_Counter),
+        speed: typeof msg?.Mespack_Filler_Speed === "number" ? msg.Mespack_Filler_Speed : Number(msg?.Mespack_Filler_Speed),
+        lossType,
+        state,
+      };
+    }).filter(s => Number.isFinite(s.ts) && s.ts >= cutoff);
+
+    series.sort((a, b) => a.ts - b.ts);
+    seriesRef.current = series;
+    setOverview(computeOverview(series, nowTs));
+    setLastUpdated(new Date());
+  }, []);
+
+  const handleMessage = useCallback((msg) => ingestMessage(msg, { updateUi: true }), [ingestMessage]);
+  const mqttStatus = useMqtt({ onMessage: handleMessage, onSnapshot: handleSnapshot });
 
   // Lock body scroll when mobile drawer is open; close drawer on resize to desktop
   useEffect(() => {
@@ -525,7 +823,8 @@ export default function App() {
     }
   }, [sidebarOpen]);
 
-  const stateInfo  = FILLER_STATE[data.state] ?? FILLER_STATE[0];
+  const stateInfo  = getStateMeta(data.state);
+  const stateKpi   = getStateKpiVisual(data.state);
   const rejectRate = data.counterIn > 0 ? ((data.rejects / data.counterIn) * 100).toFixed(1) : "0.0";
   const passRate   = data.counterIn > 0 ? ((data.counterOut / data.counterIn) * 100).toFixed(1) : "0.0";
 
@@ -537,11 +836,23 @@ export default function App() {
       badge: <Badge color="emerald"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />Active</Badge>,
     },
     {
-      label: "Status", icon: <IconBolt className="w-5 h-5 text-emerald-600" />, accent: "bg-emerald-50",
-      value: <span className={stateInfo.color}>{data.state !== null ? stateInfo.label : "—"}</span>,
-      sub:   data.shift ?? "—",
-      badge: data.state !== null
-        ? <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ring-1 ${stateInfo.bg} ${stateInfo.color} ${stateInfo.ring}`}>State {data.state}</span>
+      label: "Status",
+      icon: stateKpi.icon,
+      accent: stateKpi.accent,
+      value: <span className={stateInfo.color}>{data.state != null ? stateInfo.label : "—"}</span>,
+      sub: data.shift ?? "—",
+      badge: data.state != null
+        ? (
+          <Badge color={
+            stateInfo.tone === "ok" ? "emerald"
+              : stateInfo.tone === "danger" ? "red"
+              : stateInfo.tone === "warn" ? "amber"
+              : "slate"
+          }>
+            <span className={`w-1.5 h-1.5 rounded-full ${stateInfo.dot} ${stateInfo.tone === "ok" ? "animate-pulse" : ""}`} />
+            State #{data.state}
+          </Badge>
+        )
         : null,
     },
     {
@@ -704,7 +1015,6 @@ export default function App() {
                     </thead>
                     <tbody>
                       {history.map((row, i) => {
-                        const si = FILLER_STATE[row.state] ?? FILLER_STATE[0];
                         return (
                           <tr key={i} className={`border-b border-slate-100 hover:bg-slate-50/80 transition-colors ${i === 0 ? "bg-indigo-50/50" : ""}`}>
                             <td className="px-4 py-2.5 text-[12px] text-slate-500 font-mono whitespace-nowrap">{row.time}</td>
@@ -715,9 +1025,7 @@ export default function App() {
                             <td className="px-4 py-2.5 text-[13px] text-indigo-600 font-semibold tabular-nums">{row.oee}%</td>
                             <td className="px-4 py-2.5 text-[12px] text-slate-500">{row.shift}</td>
                             <td className="px-4 py-2.5">
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-[11px] font-semibold ring-1 ${si.bg} ${si.color} ${si.ring}`}>
-                                {si.label}
-                              </span>
+                              <StatePill state={row.state} size="sm" showCode />
                             </td>
                           </tr>
                         );
@@ -730,7 +1038,7 @@ export default function App() {
           </div>
 
           {/* Production graph — bottom */}
-          <ProductionGraph liveSpeed={data.speed} />
+          <ProductionGraph liveSpeed={data.speed} overview={overview} />
         </main>
       </div>
     </div>
